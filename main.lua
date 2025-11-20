@@ -14,22 +14,35 @@ local TextWidget = require("ui/widget/textwidget")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
-local HorizontalGroup = require("ui/widget/horizontalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Font = require("ui/font")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
--- NYT Theme Colors (Hex)
-local COLOR_SELECTED_BLUE = 0xBBDEFB
-local COLOR_GUIDE_GRAY = 0xE0E0E0
-local COLOR_SAME_NUMBER_DARKER = 0x90CAF9
-local COLOR_HIGHLIGHT_TEXT = 0xFFFFFF
-local COLOR_NOTE_TEXT = 0x666666
-local COLOR_WRONG_RED = 0xD32F2F
-local COLOR_GIVEN_TEXT = 0x000000
-local COLOR_USER_TEXT = 0x1565C0
+-- Helper to resolve colors safely for Blitbuffer
+local function getColor(name, hex)
+    if Blitbuffer.Color32 then
+        return Blitbuffer.Color32(hex)
+    end
+    local constant_name = "COLOR_" .. name
+    if Blitbuffer[constant_name] then
+        return Blitbuffer[constant_name]
+    end
+    if name == "WHITE" then return 0xFFFFFF end
+    if name == "BLACK" then return 0x000000 end
+    return Blitbuffer.COLOR_LIGHT_GRAY or Blitbuffer.COLOR_WHITE or 0xFFFFFF
+end
+
+-- NYT Theme Colors (Safe)
+local COLOR_SELECTED_BLUE = getColor("BLUE", 0xBBDEFB)
+local COLOR_GUIDE_GRAY = getColor("LIGHT_GRAY", 0xE0E0E0)
+local COLOR_SAME_NUMBER_DARKER = getColor("CYAN", 0x90CAF9)
+local COLOR_HIGHLIGHT_TEXT = getColor("WHITE", 0xFFFFFF)
+local COLOR_NOTE_TEXT = getColor("DARK_GRAY", 0x666666)
+local COLOR_WRONG_RED = getColor("RED", 0xD32F2F)
+local COLOR_GIVEN_TEXT = getColor("BLACK", 0x000000)
+local COLOR_USER_TEXT = getColor("BLUE", 0x1565C0)
 
 local DISPLAY_PINS_ON_GIVEN = false
 
@@ -42,7 +55,6 @@ local DIFFICULTY_LABELS = {
     hard = _("Hard"),
 }
 
--- Helper for safe painting
 local function paintRectSafe(bb, x, y, w, h, color)
     bb:paintRect(math.floor(x), math.floor(y), math.floor(w), math.floor(h), color)
 end
@@ -636,11 +648,13 @@ function SudokuBoardWidget:paintTo(bb, x, y)
     self.paint_rect = Geom:new{ x = x, y = y, w = self.dimen.w, h = self.dimen.h }
     local cell_size = self.dimen.w / 9
 
+    -- Background
     paintRectSafe(bb, x, y, self.dimen.w, self.dimen.h, Blitbuffer.COLOR_WHITE)
 
     local sel_row, sel_col = self.board:getSelection()
     local sel_val = self.board:getWorkingValue(sel_row, sel_col)
 
+    -- Guide Highlights
     paintRectSafe(bb, x + (sel_col - 1) * cell_size, y, cell_size, self.dimen.h, COLOR_GUIDE_GRAY)
     paintRectSafe(bb, x, y + (sel_row - 1) * cell_size, self.dimen.w, cell_size, COLOR_GUIDE_GRAY)
 
@@ -654,6 +668,7 @@ function SudokuBoardWidget:paintTo(bb, x, y)
         COLOR_GUIDE_GRAY
     )
 
+    -- Same Number Highlight
     if sel_val ~= 0 then
         for r = 1, 9 do
             for c = 1, 9 do
@@ -670,6 +685,7 @@ function SudokuBoardWidget:paintTo(bb, x, y)
         end
     end
 
+    -- Selected Cell Highlight
     paintRectSafe(bb,
         x + (sel_col - 1) * cell_size,
         y + (sel_row - 1) * cell_size,
@@ -678,6 +694,7 @@ function SudokuBoardWidget:paintTo(bb, x, y)
         COLOR_SELECTED_BLUE
     )
 
+    -- Grid Lines
     local thin = Size.line.thin
     local thick = Size.line.thick
 
@@ -687,6 +704,7 @@ function SudokuBoardWidget:paintTo(bb, x, y)
         drawLine(bb, x, y + math.floor(i * cell_size), self.dimen.w, thickness, Blitbuffer.COLOR_BLACK)
     end
 
+    -- Numbers and Notes
     for row = 1, 9 do
         for col = 1, 9 do
             local value, is_given = self.board:getDisplayValue(row, col)
@@ -696,7 +714,7 @@ function SudokuBoardWidget:paintTo(bb, x, y)
             if value then
                 local color
                 if self.board:isShowingSolution() and not is_given then
-                    color = Blitbuffer.COLOR_GRAY_4
+                    color = Blitbuffer.COLOR_GRAY_4 or Blitbuffer.COLOR_LIGHT_GRAY
                 elseif is_given then
                     color = COLOR_GIVEN_TEXT
                 else
