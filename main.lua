@@ -14,18 +14,23 @@ local TextWidget = require("ui/widget/textwidget")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Font = require("ui/font")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
--- Define Purple Theme Colors (0xRRGGBB)
-local COLOR_PURPLE_SELECTED = 0xCE93D8
-local COLOR_PURPLE_GUIDE = 0xF3E5F5
-local COLOR_PURPLE_SAME = 0xE1BEE7
+-- NYT Theme Colors (Hex)
+local COLOR_SELECTED_BLUE = 0xBBDEFB
+local COLOR_GUIDE_GRAY = 0xE0E0E0
+local COLOR_SAME_NUMBER_DARKER = 0x90CAF9
+local COLOR_HIGHLIGHT_TEXT = 0xFFFFFF
+local COLOR_NOTE_TEXT = 0x666666
+local COLOR_WRONG_RED = 0xD32F2F
+local COLOR_GIVEN_TEXT = 0x000000
+local COLOR_USER_TEXT = 0x1565C0
 
--- NYT style: Givens are just numbers, no pins.
 local DISPLAY_PINS_ON_GIVEN = false
 
 local Screen = Device.screen
@@ -36,6 +41,11 @@ local DIFFICULTY_LABELS = {
     medium = _("Medium"),
     hard = _("Hard"),
 }
+
+-- Helper for safe painting
+local function paintRectSafe(bb, x, y, w, h, color)
+    bb:paintRect(math.floor(x), math.floor(y), math.floor(w), math.floor(h), color)
+end
 
 local function emptyGrid()
     local grid = {}
@@ -82,9 +92,7 @@ local function emptyMarkerGrid()
 end
 
 local function cloneNoteCell(cell)
-    if not cell then
-        return nil
-    end
+    if not cell then return nil end
     local copy = nil
     for digit = 1, 9 do
         if cell[digit] then
@@ -137,35 +145,27 @@ end
 
 local function isValidPlacement(grid, row, col, value)
     for i = 1, 9 do
-        if grid[row][i] == value or grid[i][col] == value then
-            return false
-        end
+        if grid[row][i] == value or grid[i][col] == value then return false end
     end
     local box_row = math.floor((row - 1) / 3) * 3 + 1
     local box_col = math.floor((col - 1) / 3) * 3 + 1
     for r = box_row, box_row + 2 do
         for c = box_col, box_col + 2 do
-            if grid[r][c] == value then
-                return false
-            end
+            if grid[r][c] == value then return false end
         end
     end
     return true
 end
 
 local function fillBoard(grid, cell)
-    if cell > 81 then
-        return true
-    end
+    if cell > 81 then return true end
     local row = math.floor((cell - 1) / 9) + 1
     local col = (cell - 1) % 9 + 1
     local numbers = shuffledDigits()
     for _, value in ipairs(numbers) do
         if isValidPlacement(grid, row, col, value) then
             grid[row][col] = value
-            if fillBoard(grid, cell + 1) then
-                return true
-            end
+            if fillBoard(grid, cell + 1) then return true end
             grid[row][col] = 0
         end
     end
@@ -181,9 +181,7 @@ end
 local function countSolutions(grid, limit)
     local solutions = 0
     local function search(cell)
-        if solutions >= limit then
-            return
-        end
+        if solutions >= limit then return end
         if cell > 81 then
             solutions = solutions + 1
             return
@@ -199,9 +197,7 @@ local function countSolutions(grid, limit)
                 grid[row][col] = value
                 search(cell + 1)
                 grid[row][col] = 0
-                if solutions >= limit then
-                    return
-                end
+                if solutions >= limit then return end
             end
         end
     end
@@ -225,9 +221,7 @@ local function createPuzzle(solved_grid, difficulty)
     end
     local removed = 0
     for _, cell in ipairs(cells) do
-        if removed >= removals then
-            break
-        end
+        if removed >= removals then break end
         local row, col = cell.r, cell.c
         if puzzle[row][col] ~= 0 then
             local backup = puzzle[row][col]
@@ -258,6 +252,7 @@ function SudokuBoard:new()
         difficulty = DEFAULT_DIFFICULTY,
         reveal_solution = false,
         undo_stack = {},
+        note_mode = false,
     }
     setmetatable(board, self)
     board:recalcConflicts()
@@ -274,13 +269,12 @@ function SudokuBoard:serialize()
         selected = { row = self.selected.row, col = self.selected.col },
         difficulty = self.difficulty,
         reveal_solution = self.reveal_solution,
+        note_mode = self.note_mode,
     }
 end
 
 function SudokuBoard:load(state)
-    if not state or not state.puzzle or not state.solution or not state.user then
-        return false
-    end
+    if not state or not state.puzzle or not state.solution or not state.user then return false end
     self.puzzle = copyGrid(state.puzzle)
     self.solution = copyGrid(state.solution)
     self.user = copyGrid(state.user)
@@ -301,6 +295,7 @@ function SudokuBoard:load(state)
         self.selected = { row = 1, col = 1 }
     end
     self.reveal_solution = state.reveal_solution or false
+    self.note_mode = state.note_mode or false
     self:recalcConflicts()
     return true
 end
@@ -317,13 +312,12 @@ function SudokuBoard:generate(difficulty)
     self.selected = { row = 1, col = 1 }
     self.reveal_solution = false
     self.undo_stack = {}
+    self.note_mode = false
     self:recalcConflicts()
 end
 
 function SudokuBoard:pushUndo(entry)
-    if entry then
-        self.undo_stack[#self.undo_stack + 1] = entry
-    end
+    if entry then self.undo_stack[#self.undo_stack + 1] = entry end
 end
 
 function SudokuBoard:clearUndoHistory()
@@ -332,9 +326,7 @@ end
 
 function SudokuBoard:getWorkingValue(row, col)
     local given = self.puzzle[row][col]
-    if given ~= 0 then
-        return given
-    end
+    if given ~= 0 then return given end
     return self.user[row][col]
 end
 
@@ -420,21 +412,15 @@ function SudokuBoard:toggleSolution()
 end
 
 function SudokuBoard:setValue(value)
-    if self.reveal_solution then
-        return false, _("Hide result to keep playing.")
-    end
+    if self.reveal_solution then return false, _("Hide result to keep playing.") end
     local row, col = self:getSelection()
-    if self:isGiven(row, col) then
-        return false, _("This cell is fixed.")
-    end
+    if self:isGiven(row, col) then return false, _("This cell is fixed.") end
     local prev_value = self.user[row][col]
     local prev_notes = cloneNoteCell(self.notes[row][col])
     local new_value = value or 0
 
     if prev_value == new_value and not prev_notes then
-        if not value then
-            return false, _("Cell already empty.")
-        end
+        if not value then return false, _("Cell already empty.") end
         return true
     end
 
@@ -466,9 +452,7 @@ function SudokuBoard:getDisplayValue(row, col)
         return self.puzzle[row][col], true
     end
     local value = self.user[row][col]
-    if value == 0 then
-        return nil
-    end
+    if value == 0 then return nil end
     return value, false
 end
 
@@ -484,13 +468,9 @@ end
 
 function SudokuBoard:getCellNotes(row, col)
     local cell = self.notes[row] and self.notes[row][col]
-    if not cell then
-        return nil
-    end
+    if not cell then return nil end
     for digit = 1, 9 do
-        if cell[digit] then
-            return cell
-        end
+        if cell[digit] then return cell end
     end
     return nil
 end
@@ -529,16 +509,10 @@ function SudokuBoard:updateWrongMarks()
 end
 
 function SudokuBoard:toggleNoteDigit(value)
-    if self.reveal_solution then
-        return false, _("Hide result to keep playing.")
-    end
+    if self.reveal_solution then return false, _("Hide result to keep playing.") end
     local row, col = self:getSelection()
-    if self:isGiven(row, col) then
-        return false, _("This cell is fixed.")
-    end
-    if self.user[row][col] ~= 0 then
-        return false, _("Clear the cell before adding notes.")
-    end
+    if self:isGiven(row, col) then return false, _("This cell is fixed.") end
+    if self.user[row][col] ~= 0 then return false, _("Clear the cell before adding notes.") end
     self.notes[row][col] = self.notes[row][col] or {}
     local prev_cell = cloneNoteCell(self.notes[row][col])
     local was_set = self.notes[row][col][value] and true or false
@@ -548,9 +522,7 @@ function SudokuBoard:toggleNoteDigit(value)
         self.notes[row][col][value] = true
     end
     local now_set = self.notes[row][col][value] and true or false
-    if was_set == now_set then
-        return true
-    end
+    if was_set == now_set then return true end
     self:pushUndo{
         type = "notes",
         row = row,
@@ -578,9 +550,7 @@ end
 
 function SudokuBoard:undo()
     local entry = table.remove(self.undo_stack)
-    if not entry then
-        return false, _("Nothing to undo.")
-    end
+    if not entry then return false, _("Nothing to undo.") end
     local row, col = entry.row, entry.col
     if entry.type == "value" then
         self.user[row][col] = entry.prev_value or 0
@@ -596,9 +566,7 @@ function SudokuBoard:undo()
 end
 
 function SudokuBoard:isSolved()
-    if self.reveal_solution then
-        return false
-    end
+    if self.reveal_solution then return false end
     for r = 1, 9 do
         for c = 1, 9 do
             if self:getWorkingValue(r, c) ~= self.solution[r][c] or self.conflicts[r][c] then
@@ -615,6 +583,7 @@ local SudokuBoardWidget = InputContainer:extend{
 
 function SudokuBoardWidget:init()
     self.size = math.floor(math.min(Screen:getWidth(), Screen:getHeight()) * 0.82)
+    self.size = math.floor(self.size / 9) * 9
     self.dimen = Geom:new{ w = self.size, h = self.size }
     self.paint_rect = Geom:new{ x = 0, y = 0, w = self.size, h = self.size }
     self.number_face = Font:getFace("cfont", math.max(28, math.floor(self.size / 14)))
@@ -633,30 +602,20 @@ function SudokuBoardWidget:getCellFromPoint(x, y)
     local rect = self.paint_rect
     local local_x = x - rect.x
     local local_y = y - rect.y
-    if local_x < 0 or local_y < 0 or local_x > rect.w or local_y > rect.h then
-        return nil
-    end
+    if local_x < 0 or local_y < 0 or local_x > rect.w or local_y > rect.h then return nil end
     local cell_size = rect.w / 9
     local col = math.floor(local_x / cell_size) + 1
     local row = math.floor(local_y / cell_size) + 1
-    if row < 1 or row > 9 or col < 1 or col > 9 then
-        return nil
-    end
+    if row < 1 or row > 9 or col < 1 or col > 9 then return nil end
     return row, col
 end
 
 function SudokuBoardWidget:onTap(_, ges)
-    if not (self.board and ges and ges.pos) then
-        return false
-    end
+    if not (self.board and ges and ges.pos) then return false end
     local row, col = self:getCellFromPoint(ges.pos.x, ges.pos.y)
-    if not row then
-        return false
-    end
+    if not row then return false end
     self.board:setSelection(row, col)
-    if self.onSelectionChanged then
-        self.onSelectionChanged(row, col)
-    end
+    if self.onSelectionChanged then self.onSelectionChanged(row, col) end
     self:refresh()
     return true
 end
@@ -669,107 +628,83 @@ function SudokuBoardWidget:refresh()
 end
 
 local function drawLine(bb, x, y, w, h, color)
-    bb:paintRect(x, y, w, h, color)
-end
-
-local function drawDiagonalLine(bb, x, y, length, dx, dy, color, thickness)
-    color = color or Blitbuffer.COLOR_BLACK
-    thickness = thickness or 1
-    length = math.max(0, length)
-    for step = 0, length do
-        local px = math.floor(x + dx * step)
-        local py = math.floor(y + dy * step)
-        bb:paintRect(px, py, thickness, thickness, color)
-    end
+    paintRectSafe(bb, x, y, w, h, color)
 end
 
 function SudokuBoardWidget:paintTo(bb, x, y)
-    if not self.board then
-        return
-    end
+    if not self.board then return end
     self.paint_rect = Geom:new{ x = x, y = y, w = self.dimen.w, h = self.dimen.h }
     local cell_size = self.dimen.w / 9
 
-    -- 1. Draw Background
-    bb:paintRect(x, y, self.dimen.w, self.dimen.h, Blitbuffer.COLOR_WHITE)
+    paintRectSafe(bb, x, y, self.dimen.w, self.dimen.h, Blitbuffer.COLOR_WHITE)
 
-    -- 2. Draw Highlights
     local sel_row, sel_col = self.board:getSelection()
     local sel_val = self.board:getWorkingValue(sel_row, sel_col)
 
-    -- Highlight Row and Column (Guide)
-    bb:paintRect(x + (sel_col - 1) * cell_size, y, cell_size, self.dimen.h, COLOR_PURPLE_GUIDE)
-    bb:paintRect(x, y + (sel_row - 1) * cell_size, self.dimen.w, cell_size, COLOR_PURPLE_GUIDE)
+    paintRectSafe(bb, x + (sel_col - 1) * cell_size, y, cell_size, self.dimen.h, COLOR_GUIDE_GRAY)
+    paintRectSafe(bb, x, y + (sel_row - 1) * cell_size, self.dimen.w, cell_size, COLOR_GUIDE_GRAY)
 
-    -- Highlight 3x3 Box (Guide)
     local box_row_start = math.floor((sel_row - 1) / 3) * 3 + 1
     local box_col_start = math.floor((sel_col - 1) / 3) * 3 + 1
-    bb:paintRect(
+    paintRectSafe(bb,
         x + (box_col_start - 1) * cell_size,
         y + (box_row_start - 1) * cell_size,
         cell_size * 3,
         cell_size * 3,
-        COLOR_PURPLE_GUIDE
+        COLOR_GUIDE_GRAY
     )
 
-    -- Highlight Same Numbers
     if sel_val ~= 0 then
         for r = 1, 9 do
             for c = 1, 9 do
                 if self.board:getWorkingValue(r, c) == sel_val then
-                    bb:paintRect(
+                    paintRectSafe(bb,
                         x + (c - 1) * cell_size,
                         y + (r - 1) * cell_size,
                         cell_size,
                         cell_size,
-                        COLOR_PURPLE_SAME
+                        COLOR_SAME_NUMBER_DARKER
                     )
                 end
             end
         end
     end
 
-    -- Highlight Selected Cell (Darkest)
-    bb:paintRect(
+    paintRectSafe(bb,
         x + (sel_col - 1) * cell_size,
         y + (sel_row - 1) * cell_size,
         cell_size,
         cell_size,
-        COLOR_PURPLE_SELECTED
+        COLOR_SELECTED_BLUE
     )
 
-    -- 3. Draw Grid Lines
+    local thin = Size.line.thin
+    local thick = Size.line.thick
+
     for i = 0, 9 do
-        local thickness = (i % 3 == 0) and Size.line.thick or Size.line.thin
+        local thickness = (i % 3 == 0) and thick or thin
         drawLine(bb, x + math.floor(i * cell_size), y, thickness, self.dimen.h, Blitbuffer.COLOR_BLACK)
         drawLine(bb, x, y + math.floor(i * cell_size), self.dimen.w, thickness, Blitbuffer.COLOR_BLACK)
     end
 
-    -- 4. Draw Numbers and Notes
     for row = 1, 9 do
         for col = 1, 9 do
             local value, is_given = self.board:getDisplayValue(row, col)
+            local cell_x = x + (col - 1) * cell_size
+            local cell_y = y + (row - 1) * cell_size
 
             if value then
-                -- Draw Number
-                local cell_x = x + (col - 1) * cell_size
-                local cell_y = y + (row - 1) * cell_size
                 local color
-
                 if self.board:isShowingSolution() and not is_given then
                     color = Blitbuffer.COLOR_GRAY_4
                 elseif is_given then
-                    color = Blitbuffer.COLOR_BLACK
+                    color = COLOR_GIVEN_TEXT
                 else
-                    -- User entered value
-                    -- If check was run and it's marked wrong, maybe red?
-                    -- But NYT style usually just keeps it normal until check.
-                    -- We'll stick to standard gray/black hierarchy.
-                    color = Blitbuffer.COLOR_GRAY_2
-                    -- Could change to Blue or similar if desired, but gray is safe.
+                    color = COLOR_USER_TEXT
+                    if self.board:hasWrongMark(row, col) then
+                         color = COLOR_WRONG_RED
+                    end
                 end
-
-                -- NOTE: Removed immediate conflict red highlighting (isConflict check)
 
                 local text = tostring(value)
                 local metrics = RenderText:sizeUtf8Text(0, cell_size, self.number_face, text, true, false)
@@ -777,28 +712,7 @@ function SudokuBoardWidget:paintTo(bb, x, y)
                 local baseline = cell_y + math.floor((cell_size + metrics.y_top - metrics.y_bottom) / 2)
                 local text_x = cell_x + math.floor((cell_size - text_w) / 2)
                 RenderText:renderUtf8Text(bb, text_x, baseline, self.number_face, text, true, false, color)
-
-                -- Draw Wrong Marks (if check was performed)
-                if self.board:hasWrongMark(row, col) then
-                    local padding = math.max(1, math.floor(cell_size / 12))
-                    local diag_len = math.max(0, math.floor(cell_size - padding * 2))
-                    local cross_thickness = math.max(2, math.floor(cell_size / 18))
-                    drawDiagonalLine(bb, cell_x + padding, cell_y + padding, diag_len, 1, 1, Blitbuffer.COLOR_RED, cross_thickness)
-                    drawDiagonalLine(bb, cell_x + padding, cell_y + cell_size - padding, diag_len, 1, -1, Blitbuffer.COLOR_RED, cross_thickness)
-                end
-
-                -- Draw Pins (Disabled by default now)
-                if is_given and DISPLAY_PINS_ON_GIVEN then
-                    local dot = math.max(1, math.floor(cell_size / 18))
-                    local padding = math.max(1, math.floor(cell_size / 20))
-                    local dot_color = Blitbuffer.COLOR_GRAY_4
-                    bb:paintRect(cell_x + padding, cell_y + padding, dot, dot, dot_color)
-                    bb:paintRect(cell_x + cell_size - padding - dot, cell_y + padding, dot, dot, dot_color)
-                    bb:paintRect(cell_x + padding, cell_y + cell_size - padding - dot, dot, dot, dot_color)
-                    bb:paintRect(cell_x + cell_size - padding - dot, cell_y + cell_size - padding - dot, dot, dot, dot_color)
-                end
             else
-                -- Draw Notes
                 local notes = self.board:getCellNotes(row, col)
                 if notes then
                     local mini = cell_size / 3
@@ -806,14 +720,14 @@ function SudokuBoardWidget:paintTo(bb, x, y)
                         if notes[digit] then
                             local mini_col = (digit - 1) % 3
                             local mini_row = math.floor((digit - 1) / 3)
-                            local mini_x = x + (col - 1) * cell_size + mini_col * mini
-                            local mini_y = y + (row - 1) * cell_size + mini_row * mini
+                            local mini_x = cell_x + mini_col * mini
+                            local mini_y = cell_y + mini_row * mini
 
                             local note_text = tostring(digit)
                             local note_metrics = RenderText:sizeUtf8Text(0, mini, self.note_face, note_text, true, false)
                             local note_baseline = mini_y + math.floor((mini + note_metrics.y_top - note_metrics.y_bottom) / 2)
                             local note_x = mini_x + math.floor((mini - note_metrics.x) / 2)
-                            RenderText:renderUtf8Text(bb, note_x, note_baseline, self.note_face, note_text, true, false, Blitbuffer.COLOR_GRAY_4)
+                            RenderText:renderUtf8Text(bb, note_x, note_baseline, self.note_face, note_text, true, false, COLOR_NOTE_TEXT)
                         end
                     end
                 end
@@ -828,7 +742,6 @@ function SudokuScreen:init()
     self.dimen = Geom:new{ x = 0, y = 0, w = Screen:getWidth(), h = Screen:getHeight() }
     self.covers_fullscreen = true
     self.vertical_align = "center"
-    self.note_mode = false
     self.undo_button = nil
     if Device:hasKeys() then
         self.key_events.Close = { { Device.input.group.Back } }
@@ -839,20 +752,16 @@ function SudokuScreen:init()
     }
     self.board_widget = SudokuBoardWidget:new{
         board = self.board,
-        onSelectionChanged = function()
-            self:updateStatus()
-        end,
+        onSelectionChanged = function() self:updateStatus() end,
     }
     self:buildLayout()
-    UIManager:setDirty(self, function()
-        return "ui", self.dimen
-    end)
+    UIManager:setDirty(self, function() return "ui", self.dimen end)
 end
 
 function SudokuScreen:paintTo(bb, x, y)
     self.dimen.x = x
     self.dimen.y = y
-    bb:paintRect(x, y, self.dimen.w, self.dimen.h, Blitbuffer.COLOR_WHITE)
+    paintRectSafe(bb, x, y, self.dimen.w, self.dimen.h, Blitbuffer.COLOR_WHITE)
     local content_size = self.layout:getSize()
     local offset_x = x + math.floor((self.dimen.w - content_size.w) / 2)
     local offset_y = y
@@ -868,152 +777,122 @@ function SudokuScreen:buildLayout()
         margin = Size.margin.default,
         self.board_widget,
     }
-    local top_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width = math.floor(Screen:getWidth() * 0.9),
-        buttons = {
-            {
-                {
-                    text = _("New game"),
-                    callback = function()
-                        self:onNewGame()
-                    end,
-                },
-                {
-                    id = "difficulty_button",
-                    text = self:getDifficultyButtonText(),
-                    callback = function()
-                        self:openDifficultyMenu()
-                    end,
-                },
-                {
-                    id = "show_result",
-                    text = _("Show result"),
-                    callback = function()
-                        self:toggleSolution()
-                    end,
-                },
-                {
-                    text = _("Close"),
-                    callback = function()
-                        self:onClose()
-                        UIManager:close(self)
-                        UIManager:setDirty(nil, "full")
-                    end,
-                },
-            },
-        },
-    }
-    self.show_result_button = top_buttons:getButtonById("show_result")
-    self.difficulty_button = top_buttons:getButtonById("difficulty_button")
-
-    local keypad_rows = {}
-    local value = 1
-    for _ = 1, 3 do
-        local row = {}
-        for _ = 1, 3 do
-            local digit = value
-            row[#row + 1] = {
-                text = tostring(digit),
-                callback = function()
-                    self:onDigit(digit)
-                end,
-            }
-            value = value + 1
-        end
-        keypad_rows[#keypad_rows + 1] = row
+    self.undo_button = nil
+    self.note_button = nil
+    local number_keys = {}
+    for i = 1, 9 do
+        number_keys[#number_keys+1] = {
+            text = tostring(i),
+            callback = function() self:onDigit(i) end,
+        }
     end
-    keypad_rows[#keypad_rows + 1] = {
-        {
-            id = "note_button",
-            text = self:getNoteButtonText(),
-            callback = function()
-                self:toggleNoteMode()
-            end,
-        },
-        {
-            text = _("Erase"),
-            callback = function()
-                self:onErase()
-            end,
-        },
-        {
-            text = _("Check"),
-            callback = function()
-                self:checkProgress()
-            end,
-        },
+    local number_strip = ButtonTable:new{
+        width = math.floor(Screen:getWidth() * 0.9),
+        shrink_unneeded_width = true,
+        buttons = { number_keys },
+    }
+    local tools = {
         {
             id = "undo_button",
             text = _("Undo"),
-            callback = function()
-                self:onUndo()
-            end,
+            callback = function() self:onUndo() end,
         },
+        {
+            text = _("Erase"),
+            callback = function() self:onErase() end,
+        },
+        {
+            id = "note_button",
+            text = self:getNoteButtonText(),
+            callback = function() self:toggleNoteMode() end,
+        },
+        {
+            text = _("Menu"),
+            callback = function() self:openMenu() end,
+        }
     }
-    local keypad = ButtonTable:new{
-        width = math.floor(Screen:getWidth() * 0.75),
+    local tool_strip = ButtonTable:new{
+        width = math.floor(Screen:getWidth() * 0.9),
         shrink_unneeded_width = true,
-        buttons = keypad_rows,
+        buttons = { tools },
     }
-    self.note_button = keypad:getButtonById("note_button")
-    self.undo_button = keypad:getButtonById("undo_button")
+    self.undo_button = tool_strip:getButtonById("undo_button")
+    self.note_button = tool_strip:getButtonById("note_button")
     self.layout = VerticalGroup:new{
         align = "center",
         VerticalSpan:new{ width = Size.span.vertical_large },
-        top_buttons,
-        VerticalSpan:new{ width = Size.span.vertical_large },
         board_frame,
         VerticalSpan:new{ width = Size.span.vertical_large },
+        number_strip,
+        VerticalSpan:new{ width = Size.span.vertical_default },
+        tool_strip,
+        VerticalSpan:new{ width = Size.span.vertical_default },
         self.status_text,
-        VerticalSpan:new{ width = Size.span.vertical_large },
-        keypad,
         VerticalSpan:new{ width = Size.span.vertical_large },
     }
     self[1] = self.layout
-    self:ensureShowButtonState()
     self:updateNoteButton()
     self:updateUndoButton()
-    self:updateDifficultyButton()
     self:updateStatus()
 end
 
 function SudokuScreen:getNoteButtonText()
-    return self.note_mode and _("Note: On") or _("Note: Off")
+    return self.board.note_mode and _("Pencil: ON") or _("Pencil")
 end
 
 function SudokuScreen:updateNoteButton()
-    if not self.note_button then
-        return
-    end
+    if not self.note_button then return end
     local width = self.note_button.width
     self.note_button:setText(self:getNoteButtonText(), width)
 end
 
 function SudokuScreen:updateUndoButton()
-    if not self.undo_button then
-        return
-    end
+    if not self.undo_button then return end
     self.undo_button:enableDisable(self.board:canUndo())
 end
 
 function SudokuScreen:toggleNoteMode()
-    self.note_mode = not self.note_mode
+    self.board.note_mode = not self.board.note_mode
     self:updateNoteButton()
-    self:updateStatus(self.note_mode and _("Note mode enabled.") or _("Note mode disabled."))
+    self:updateStatus(self.board.note_mode and _("Note mode enabled.") or _("Note mode disabled."))
+    self.plugin:saveState()
 end
 
-function SudokuScreen:getDifficultyButtonText()
-    local label = DIFFICULTY_LABELS[self.board.difficulty] or self.board.difficulty
-    return T(_("Difficulty: %1"), label)
-end
-
-function SudokuScreen:updateDifficultyButton()
-    if not self.difficulty_button then
-        return
-    end
-    local width = self.difficulty_button.width
-    self.difficulty_button:setText(self:getDifficultyButtonText(), width)
+function SudokuScreen:openMenu()
+    local items = {
+        {
+            text = _("New Game"),
+            callback = function() self:onNewGame() end,
+        },
+        {
+            text = T(_("Difficulty: %1"), DIFFICULTY_LABELS[self.board.difficulty] or self.board.difficulty),
+            callback = function() self:openDifficultyMenu() end,
+        },
+        {
+            text = self.board:isShowingSolution() and _("Hide Result") or _("Show Result"),
+            callback = function() self:toggleSolution() end,
+        },
+        {
+            text = _("Check Puzzle"),
+            callback = function() self:checkProgress() end,
+        },
+        {
+            text = _("Close"),
+            callback = function()
+                self:onClose()
+                UIManager:close(self)
+                UIManager:setDirty(nil, "full")
+            end,
+        }
+    }
+    local menu = Menu:new{
+        title = _("Sudoku Menu"),
+        item_table = items,
+        width = math.floor(Screen:getWidth() * 0.7),
+        height = math.floor(Screen:getHeight() * 0.8),
+        show_parent = self,
+    }
+    UIManager:show(menu)
 end
 
 function SudokuScreen:openDifficultyMenu()
@@ -1023,29 +902,22 @@ function SudokuScreen:openDifficultyMenu()
             self.board:generate(level)
             self.plugin:saveState()
             self.board_widget:refresh()
-            self:ensureShowButtonState()
+            self:updateUndoButton()
             self:updateStatus(T(_("Started a %1 game."), DIFFICULTY_LABELS[level] or level))
         else
             self:updateStatus()
         end
-        self:updateDifficultyButton()
-        if menu then
-            UIManager:close(menu)
-        end
+        if menu then UIManager:close(menu) end
         return true
     end
-
     local items = {}
     for _, level in ipairs(DIFFICULTY_ORDER) do
         items[#items + 1] = {
             text = DIFFICULTY_LABELS[level] or level,
             checked = (level == self.board.difficulty),
-            callback = function()
-                return selectDifficulty(level)
-            end,
+            callback = function() return selectDifficulty(level) end,
         }
     end
-
     menu = Menu:new{
         title = _("Select difficulty"),
         item_table = items,
@@ -1063,24 +935,21 @@ function SudokuScreen:updateStatus(message)
         status = message
     else
         local remaining = self.board:getRemainingCells()
-        local row, col = self.board:getSelection()
-        status = T(_("Selected: %1,%2  ·  Empty cells: %3"), row, col, remaining)
+        status = T(_("Remaining: %1"), remaining)
         if self.board:isShowingSolution() then
-            status = status .. "\n" .. _("Result is being shown; editing is disabled.")
+            status = _("Solution revealed.")
         elseif self.board:isSolved() then
-            status = _("Congratulations! Puzzle solved.")
-        elseif self.note_mode then
-            status = status .. "\n" .. _("Note mode is ON.")
+            status = _("Solved!")
+        elseif self.board.note_mode then
+            status = _("Pencil Mode")
         end
     end
     self.status_text:setText(status)
-    UIManager:setDirty(self, function()
-        return "ui", self.dimen
-    end)
+    UIManager:setDirty(self, function() return "ui", self.dimen end)
 end
 
 function SudokuScreen:onDigit(value)
-    if self.note_mode then
+    if self.board.note_mode then
         local ok, err = self.board:toggleNoteDigit(value)
         if not ok then
             self:updateStatus(err)
@@ -1124,26 +993,15 @@ function SudokuScreen:onNewGame()
     self.board:generate(self.board.difficulty)
     self.plugin:saveState()
     self.board_widget:refresh()
-    self:ensureShowButtonState()
     self:updateUndoButton()
-    self:updateStatus(_("Started a new game."))
+    self:updateStatus(_("New game started."))
 end
 
 function SudokuScreen:toggleSolution()
     self.board:toggleSolution()
     self.plugin:saveState()
     self.board_widget:refresh()
-    self:ensureShowButtonState()
-    self:updateStatus(self.board:isShowingSolution() and _("Showing the solution.") or nil)
-end
-
-function SudokuScreen:ensureShowButtonState()
-    if not self.show_result_button then
-        return
-    end
-    local text = self.board:isShowingSolution() and _("Hide result") or _("Show result")
-    local width = self.show_result_button.width
-    self.show_result_button:setText(text, width)
+    self:updateStatus()
 end
 
 function SudokuScreen:checkProgress()
@@ -1151,11 +1009,11 @@ function SudokuScreen:checkProgress()
     self.board_widget:refresh()
     self.plugin:saveState()
     if self.board:isSolved() then
-        self:updateStatus(_("Everything looks good!"))
+        self:updateStatus(_("Perfect!"))
     elseif self.board:getRemainingCells() == 0 then
-        self:updateStatus(_("There are mistakes highlighted in red."))
+        self:updateStatus(_("Mistakes found."))
     else
-        self:updateStatus(_("Keep going!"))
+        self:updateStatus(_("Checking..."))
     end
 end
 
@@ -1171,7 +1029,7 @@ function SudokuScreen:onUndo()
         return
     end
     self.board_widget:refresh()
-    self:updateStatus(_("Last move undone."))
+    self:updateStatus(_("Undo"))
     self.plugin:saveState()
     self:updateUndoButton()
 end
@@ -1191,9 +1049,7 @@ function Sudoku:addToMainMenu(menu_items)
     menu_items.sudoku = {
         text = _("Sudoku"),
         sorting_hint = "tools",
-        callback = function()
-            self:showGame()
-        end,
+        callback = function() self:showGame() end,
     }
 end
 
@@ -1209,17 +1065,13 @@ function Sudoku:getBoard()
 end
 
 function Sudoku:saveState()
-    if not self.board then
-        return
-    end
+    if not self.board then return end
     self.settings:saveSetting("state", self.board:serialize())
     self.settings:flush()
 end
 
 function Sudoku:showGame()
-    if self.screen then
-        return
-    end
+    if self.screen then return end
     self.screen = SudokuScreen:new{
         board = self:getBoard(),
         plugin = self,
@@ -1232,4 +1084,3 @@ function Sudoku:onScreenClosed()
 end
 
 return Sudoku
-
