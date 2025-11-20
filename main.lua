@@ -20,7 +20,13 @@ local Font = require("ui/font")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
-local DISPLAY_PINS_ON_GIVEN = true
+-- Define Purple Theme Colors (0xRRGGBB)
+local COLOR_PURPLE_SELECTED = 0xCE93D8
+local COLOR_PURPLE_GUIDE = 0xF3E5F5
+local COLOR_PURPLE_SAME = 0xE1BEE7
+
+-- NYT style: Givens are just numbers, no pins.
+local DISPLAY_PINS_ON_GIVEN = false
 
 local Screen = Device.screen
 local DEFAULT_DIFFICULTY = "medium"
@@ -682,67 +688,127 @@ function SudokuBoardWidget:paintTo(bb, x, y)
         return
     end
     self.paint_rect = Geom:new{ x = x, y = y, w = self.dimen.w, h = self.dimen.h }
-    local cell = self.dimen.w / 9
+    local cell_size = self.dimen.w / 9
+
+    -- 1. Draw Background
     bb:paintRect(x, y, self.dimen.w, self.dimen.h, Blitbuffer.COLOR_WHITE)
+
+    -- 2. Draw Highlights
     local sel_row, sel_col = self.board:getSelection()
-    local band_highlight = Blitbuffer.COLOR_GRAY_D
-    local cell_highlight = Blitbuffer.COLOR_GRAY
-    bb:paintRect(x + (sel_col - 1) * cell, y, cell, self.dimen.h, band_highlight)
-    bb:paintRect(x, y + (sel_row - 1) * cell, self.dimen.w, cell, band_highlight)
-    bb:paintRect(x + (sel_col - 1) * cell, y + (sel_row - 1) * cell, cell, cell, cell_highlight)
+    local sel_val = self.board:getWorkingValue(sel_row, sel_col)
+
+    -- Highlight Row and Column (Guide)
+    bb:paintRect(x + (sel_col - 1) * cell_size, y, cell_size, self.dimen.h, COLOR_PURPLE_GUIDE)
+    bb:paintRect(x, y + (sel_row - 1) * cell_size, self.dimen.w, cell_size, COLOR_PURPLE_GUIDE)
+
+    -- Highlight 3x3 Box (Guide)
+    local box_row_start = math.floor((sel_row - 1) / 3) * 3 + 1
+    local box_col_start = math.floor((sel_col - 1) / 3) * 3 + 1
+    bb:paintRect(
+        x + (box_col_start - 1) * cell_size,
+        y + (box_row_start - 1) * cell_size,
+        cell_size * 3,
+        cell_size * 3,
+        COLOR_PURPLE_GUIDE
+    )
+
+    -- Highlight Same Numbers
+    if sel_val ~= 0 then
+        for r = 1, 9 do
+            for c = 1, 9 do
+                if self.board:getWorkingValue(r, c) == sel_val then
+                    bb:paintRect(
+                        x + (c - 1) * cell_size,
+                        y + (r - 1) * cell_size,
+                        cell_size,
+                        cell_size,
+                        COLOR_PURPLE_SAME
+                    )
+                end
+            end
+        end
+    end
+
+    -- Highlight Selected Cell (Darkest)
+    bb:paintRect(
+        x + (sel_col - 1) * cell_size,
+        y + (sel_row - 1) * cell_size,
+        cell_size,
+        cell_size,
+        COLOR_PURPLE_SELECTED
+    )
+
+    -- 3. Draw Grid Lines
     for i = 0, 9 do
         local thickness = (i % 3 == 0) and Size.line.thick or Size.line.thin
-        drawLine(bb, x + math.floor(i * cell), y, thickness, self.dimen.h, Blitbuffer.COLOR_BLACK)
-        drawLine(bb, x, y + math.floor(i * cell), self.dimen.w, thickness, Blitbuffer.COLOR_BLACK)
+        drawLine(bb, x + math.floor(i * cell_size), y, thickness, self.dimen.h, Blitbuffer.COLOR_BLACK)
+        drawLine(bb, x, y + math.floor(i * cell_size), self.dimen.w, thickness, Blitbuffer.COLOR_BLACK)
     end
+
+    -- 4. Draw Numbers and Notes
     for row = 1, 9 do
         for col = 1, 9 do
             local value, is_given = self.board:getDisplayValue(row, col)
+
             if value then
-                local cell_x = x + (col - 1) * cell
-                local cell_y = y + (row - 1) * cell
+                -- Draw Number
+                local cell_x = x + (col - 1) * cell_size
+                local cell_y = y + (row - 1) * cell_size
                 local color
+
                 if self.board:isShowingSolution() and not is_given then
                     color = Blitbuffer.COLOR_GRAY_4
                 elseif is_given then
                     color = Blitbuffer.COLOR_BLACK
                 else
+                    -- User entered value
+                    -- If check was run and it's marked wrong, maybe red?
+                    -- But NYT style usually just keeps it normal until check.
+                    -- We'll stick to standard gray/black hierarchy.
                     color = Blitbuffer.COLOR_GRAY_2
+                    -- Could change to Blue or similar if desired, but gray is safe.
                 end
-                if self.board:isConflict(row, col) then
-                    color = Blitbuffer.COLOR_RED
-                end
+
+                -- NOTE: Removed immediate conflict red highlighting (isConflict check)
+
                 local text = tostring(value)
-                local metrics = RenderText:sizeUtf8Text(0, cell, self.number_face, text, true, false)
+                local metrics = RenderText:sizeUtf8Text(0, cell_size, self.number_face, text, true, false)
                 local text_w = metrics.x
-                local baseline = cell_y + math.floor((cell + metrics.y_top - metrics.y_bottom) / 2)
-                local text_x = cell_x + math.floor((cell - text_w) / 2)
+                local baseline = cell_y + math.floor((cell_size + metrics.y_top - metrics.y_bottom) / 2)
+                local text_x = cell_x + math.floor((cell_size - text_w) / 2)
                 RenderText:renderUtf8Text(bb, text_x, baseline, self.number_face, text, true, false, color)
+
+                -- Draw Wrong Marks (if check was performed)
+                if self.board:hasWrongMark(row, col) then
+                    local padding = math.max(1, math.floor(cell_size / 12))
+                    local diag_len = math.max(0, math.floor(cell_size - padding * 2))
+                    local cross_thickness = math.max(2, math.floor(cell_size / 18))
+                    drawDiagonalLine(bb, cell_x + padding, cell_y + padding, diag_len, 1, 1, Blitbuffer.COLOR_RED, cross_thickness)
+                    drawDiagonalLine(bb, cell_x + padding, cell_y + cell_size - padding, diag_len, 1, -1, Blitbuffer.COLOR_RED, cross_thickness)
+                end
+
+                -- Draw Pins (Disabled by default now)
                 if is_given and DISPLAY_PINS_ON_GIVEN then
-                    local dot = math.max(1, math.floor(cell / 18))
-                    local padding = math.max(1, math.floor(cell / 20))
+                    local dot = math.max(1, math.floor(cell_size / 18))
+                    local padding = math.max(1, math.floor(cell_size / 20))
                     local dot_color = Blitbuffer.COLOR_GRAY_4
                     bb:paintRect(cell_x + padding, cell_y + padding, dot, dot, dot_color)
-                    bb:paintRect(cell_x + cell - padding - dot, cell_y + padding, dot, dot, dot_color)
-                    bb:paintRect(cell_x + padding, cell_y + cell - padding - dot, dot, dot, dot_color)
-                    bb:paintRect(cell_x + cell - padding - dot, cell_y + cell - padding - dot, dot, dot, dot_color)
-                elseif self.board:hasWrongMark(row, col) then
-                    local padding = math.max(1, math.floor(cell / 12))
-                    local diag_len = math.max(0, math.floor(cell - padding * 2))
-                    local cross_thickness = math.max(2, math.floor(cell / 18))
-                    drawDiagonalLine(bb, cell_x + padding, cell_y + padding, diag_len, 1, 1, Blitbuffer.COLOR_BLACK, cross_thickness)
-                    drawDiagonalLine(bb, cell_x + padding, cell_y + cell - padding, diag_len, 1, -1, Blitbuffer.COLOR_BLACK, cross_thickness)
+                    bb:paintRect(cell_x + cell_size - padding - dot, cell_y + padding, dot, dot, dot_color)
+                    bb:paintRect(cell_x + padding, cell_y + cell_size - padding - dot, dot, dot, dot_color)
+                    bb:paintRect(cell_x + cell_size - padding - dot, cell_y + cell_size - padding - dot, dot, dot, dot_color)
                 end
             else
+                -- Draw Notes
                 local notes = self.board:getCellNotes(row, col)
                 if notes then
-                    local mini = cell / 3
+                    local mini = cell_size / 3
                     for digit = 1, 9 do
                         if notes[digit] then
                             local mini_col = (digit - 1) % 3
                             local mini_row = math.floor((digit - 1) / 3)
-                            local mini_x = x + (col - 1) * cell + mini_col * mini
-                            local mini_y = y + (row - 1) * cell + mini_row * mini
+                            local mini_x = x + (col - 1) * cell_size + mini_col * mini
+                            local mini_y = y + (row - 1) * cell_size + mini_row * mini
+
                             local note_text = tostring(digit)
                             local note_metrics = RenderText:sizeUtf8Text(0, mini, self.note_face, note_text, true, false)
                             local note_baseline = mini_y + math.floor((mini + note_metrics.y_top - note_metrics.y_bottom) / 2)
